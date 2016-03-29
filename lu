@@ -1,0 +1,351 @@
+#!/bin/bash
+# lu - Look Up server's running processes and compare to monitoring configuration. Report running processes that 
+# are not monitored. This assumes that the monitoring configs are properly formatted.
+
+# Todo:  
+# Add IBM services - slapd, DB2
+# Add Linux services - tcpsymlink
+# netstat nlp - another tool to use to narrow down what is running on the servers.
+# Black list vs White list - Instead of looking for what we need, look for what we don't need.
+
+set -x
+# Incoming argument
+INCOMING=$1
+
+# Config files
+LU_DATE=`date +%Y-%m%d-%H%M`
+HOST_LIST="/usr/local/change-password/all-servers"
+PRD_CFG="analysis.cfg"
+DEV_CFG="hobbit-clients.cfg"
+DEST_PRD_CFG="config/analysis.cfg"
+DEST_DEV_CFG="config/hobbit-clients.cfg"
+DEST_HOST_LIST="config/hosts_all.cfg"
+MONITORSERVERS="lp-webhobbit01 webhobbit-dev"
+
+# Log directories
+HOST_SVCS="logs/$LU_DATE/hostsvcs.log"
+ON_MONITORED_SVCS="logs/$LU_DATE/online_svcs_monitored.log"
+ON_UNMONITORED_SVCS="logs/$LU_DATE/online_svcs_not_monitored.log"
+ON_UNXPECTED_SVCS="logs/$LU_DATE/online_unexpected_svcs.log"
+NO_SVCS="logs/$LU_DATE/hosts_with_no_services.log"
+NO_ACCESS="logs/$LU_DATE/hosts_with_no_access.log"
+AWOL_HOSTS="logs/$LU_DATE/awol_hosts.log"
+
+Usage()
+{
+	echo "Usage: $0 [hostname] (looks up monitoring config for a single host)."
+	echo "       $0 [all] (looks up monitoring config for hosts from a list called: all-servers)."
+	echo "       $0 [grp] (looks up monitoring config for hosts from a user defined list)."
+	exit 0
+}
+
+Abort()
+{
+	exit 1
+}
+
+# Report unmonitored running services and some others after sorting
+ReportServices()
+{
+local monitor=$1
+local sortservice=$2
+local serverstat=`sed -n "/HOST=$INCOMINGSERVER/,/^$/p" $config | grep ^#HOST | cut -d= -f2`
+
+RemoveDomain
+
+sed -n "/HOST=$INCOMINGSERVER/,/^$/p" $config > $HOST_SVCS
+sed -i -e 's/ beaapps/\ \/usr\/local\/beaapps/' $HOST_SVCS
+
+if [ -z $serverstat ]
+then
+	serverstat="enabled"
+else
+	serverstat="disabled"
+fi
+
+if [[ $sortservice == */ ]]
+then
+	newservice=`echo $sortservice | awk -F/ '{print $(NF-1)}'`
+	if [[ $newservice == *jbossews ]]
+	then
+		newservice="Unexpected service: $sortservice" 
+	fi
+else
+	if [[ $sortservice == *logs ]]
+	then
+		newservice=`dirname $sortservice`
+	else
+		if [[ $sortservice == *=* ]] || [[ $sortservice == *\&* ]] || [[ $sortservice == *webconsole* ]] || [[ $sortservice == start ]]
+		then
+			newservice="Unexpected service: $sortservice" 
+		else
+			newservice=$sortservice
+		fi
+	fi
+fi
+
+grep -q "$newservice" $HOST_SVCS
+if [ $? -eq 0 ]
+then
+	echo "$OS_TYPE: $INCOMINGSERVER:$serverstat: $newservice monitored: $monitor" >> $ON_MONITORED_SVCS
+else
+	if [[ $newservice == Unexpected* ]]
+	then
+		echo "$OS_TYPE: $INCOMINGSERVER:$serverstat: $newservice"
+                echo "$OS_TYPE: $INCOMINGSERVER:$serverstat: $newservice" >> $ON_UNXPECTED_SVCS
+	else
+		echo "$OS_TYPE: $INCOMINGSERVER:$serverstat: $newservice unmonitored: $monitor"
+		echo "$OS_TYPE: $INCOMINGSERVER:$serverstat: $newservice unmonitored: $monitor" >> $ON_UNMONITORED_SVCS
+	fi
+fi
+}
+
+# Find running processes and report to Questular Rontok
+FindServices() 
+{ 
+local config=$1
+local monitor=$2
+
+AddDomain
+
+case $OS_TYPE in 
+  Linux)
+	running_services=`ssh -q $INCOMINGSERVER "
+		ps -aeo command | grep -v grep | grep java | egrep -o 'weblogic.RootDirectory[^[:space:]]*' | cut -d= -f2 | sort -u; 	# WebLogic
+		ps -aeo command | grep -v grep | grep java | egrep -o 'weblogic.Name[^[:space:]]*' | cut -d= -f2 | sort -u; 		# WebLogic
+		ps -aeo command | grep -v grep | grep java | egrep -o 'catalina.base[^[:space:]]*' | cut -d= -f2 | sort -u; 		# Tomcat
+		ps -aeo command | grep -v grep | grep java | egrep -o 'zookeeper.log[^[:space:]]*' | cut -d= -f2 | sort -u; 		# zookeeper
+		#ps -aeo command | grep -v grep | grep java | egrep -o 'springbootapps[^[:space:]]*' | sort -u; 			# Springboot
+		ps -aeo command | grep -v grep | grep java | egrep -o 'springbootapps[^[:space:]]*' | grep .jar | sort -u;		# Springboot
+		ps -aeo command | grep -v grep | grep java | egrep -o clm | sort -u;							# clm
+		ps -aeo command | grep -v grep | grep java | sed -n -e 's/^.*Cell01 //p' | cut -d' ' -f2; 				# WebSphere
+		ps -aeo command | grep -v grep | grep java | sed -n -e 's/^.*01Cell //p' | cut -d' ' -f2; 				# WebSphere
+		ps -aeo command | grep -v grep | grep java | egrep -o 'sun.aas.domainName[^[:space:]]*'| cut -d= -f2 | sort -u; 	# Aurion
+		ps -aeo command | grep -v grep | grep PolicyDirector | cut -d' ' -f1; 							# Policy Director
+		ps -aeo command | grep -v grep | grep webseald-default.conf | cut -d' ' -f1; 						# Webseal
+		ps -aeo command | grep -v grep | grep httpd | cut -d' ' -f1 | sort -u; 							# Httpd
+		#ps -aeo command | grep -v grep | grep java | grep jboss | grep -o '[^\ ]*$' | sort -u; 					# JBoss
+		ps -aeo command | grep -v grep | grep java | egrep -o 'jboss.server.base.dir[^[:space:]]*' | cut -d= -f2;		# JBoss
+		ps -aeo command | grep -v grep | grep java | egrep -o 'jsw' | sort -u;							# jsw
+		ps -aeo command | grep -v grep | grep ruby | egrep -o /usr/sbin/mcollectived | sort -u;					# mcollectived
+		ps -aeo command | grep -v grep | grep node | egrep -o /openshift-node-web-proxy/bin/web-proxy.js | sort -u;		# Openshift
+		ps -aeo command | grep -v grep | grep node | egrep -o /usr/bin/node-supervisor;						# node-supervisor
+		ps -aeo command | grep -v grep | grep tcl | grep centricity | cut -d' ' -f2;						# centricity
+		#ps -aeo command | grep -v grep | grep cocoon | cut -d' ' -f2;								# Cocoon
+		ps -aeo command | grep -v grep | grep cocoon | cut -d' ' -f8;								# Cocoon/tcpsymlink
+		ps -aeo command | grep -v grep | grep stunnel | cut -d' ' -f1 | sort -u							# Stunnel
+		"`
+	if [ -z "$running_services" ]
+        then
+                echo "$OS_TYPE: $INCOMINGSERVER: $monitor: No services found." >> $NO_SVCS
+        else
+                for service in $running_services
+                do
+			ReportServices $monitor $service
+                done
+        fi
+	;;
+
+  SunOS)
+	running_services=`ssh -q $INCOMINGSERVER "
+		cd /usr/local; 
+		sudo pspwd | grep -v grep | grep tomcat | sed 's/^[ \t]*//' | cut -d' ' -f2; 
+		sudo pgrep httpd | xargs sudo pargs | grep -v defunct | grep httpd | cut -d: -f2 | cut -d' ' -f1 | sort -u | sed 's/^[ \t]*//'; 
+		pgrep -f -l tcl | grep -v grep | grep telepatientrp.tcl | sed 's/^ *//g' | cut -d' ' -f3
+		"`
+	if [ -z "$running_services" ]
+        then
+                echo "$OS_TYPE: $INCOMINGSERVER: $monitor: No services found." >> $NO_SVCS
+        else
+                for service in $running_services
+                do
+			ReportServices $monitor $service
+                done
+        fi
+	;;
+  
+  AIX)
+	running_services=`ssh -q $INCOMINGSERVER "
+		sudo ps -aeo pid,comm | grep -v grep | grep java | cut -d' ' -f2 | xargs sudo procwdx | cut -d: -f2; 
+		sudo ps -aeo pid,comm | grep -v grep | grep httpd | cut -d' ' -f2 | xargs sudo procwdx | cut -d: -f2
+		"`
+	if [ -z "$running_services" ]
+        then
+                echo "$OS_TYPE: $INCOMINGSERVER: $monitor: No services found." >> $NO_SVCS
+        else
+                for service in $running_services
+                do
+			ReportServices $monitor $service
+                done
+        fi
+	;;
+  
+#  *) # $INCOMINGSERVER has already failed ssh at this point and there's no need to re-log it, just keep going.
+#	continue
+#	;;
+esac
+}
+
+# Where is $INCOMINGSERVER monitored, prod, non-prod, nowhere?
+FindServerMonitor()
+{
+local config=$1
+local monitor=$2
+
+RemoveDomain
+
+grep -q "HOST=$INCOMINGSERVER" $config
+if [ $? -eq 0 ]
+then
+	FindServices $config $monitor
+else
+	# If a server appears in this file twice, then that server is not monitored anywhere.
+	echo "$OS_TYPE: $INCOMINGSERVER:" >> $AWOL_HOSTS
+fi
+}
+
+# Sort the INCOMING variable, determine OS Type and call FindServerMonitor.
+SortIncoming()
+{
+INCOMINGSERVER=$1
+AddDomain
+
+host $INCOMINGSERVER | grep -q address
+if [ $? -eq 0 ]
+then
+	OS_TYPE=`ssh -q -o ConnectTimeout=2 $INCOMINGSERVER uname -s`
+
+	if [ -z $OS_TYPE ]
+	then
+		echo "Error: $INCOMINGSERVER: Invalid server: No OS type or ssh failed"
+		echo "Error: $INCOMINGSERVER: Invalid server: No OS type or ssh failed" >> $NO_ACCESS
+	else
+		continue
+	fi
+else
+	echo "Error: $INCOMINGSERVER: Invalid server: No IP address"
+	echo "Error: $INCOMINGSERVER: Invalid server: No IP address" >> $NO_ACCESS
+fi
+
+for Monitor in $MONITORSERVERS
+do
+	case $Monitor in
+	lp-webhobbit01) 
+		CONFIG_DIR="/usr/local/xymon/server/etc"
+		if [ -f $DEST_PRD_CFG ]
+		then
+			FindServerMonitor $DEST_PRD_CFG $Monitor
+		else
+			scp -q $Monitor:$CONFIG_DIR/$PRD_CFG $DEST_PRD_CFG
+			FindServerMonitor $DEST_PRD_CFG $Monitor
+		fi
+		;;
+
+	webhobbit-dev)
+		CONFIG_DIR="/usr/local/hobbit/server/etc"
+		if [ -f $DEST_DEV_CFG ]
+		then
+			FindServerMonitor $DEST_DEV_CFG $Monitor
+		else
+			scp -q $Monitor:$CONFIG_DIR/$DEV_CFG $DEST_DEV_CFG
+			FindServerMonitor $DEST_DEV_CFG $Monitor
+		fi
+		;;
+	esac
+done
+}
+
+# Add ihc.com so DNS/ssh would work for hosts with www
+AddDomain()
+{
+if [[ $INCOMINGSERVER == *"www"* ]]
+then
+	INCOMINGSERVER="$INCOMINGSERVER.ihc.com"
+fi
+}
+
+# Remove ihc.com to be able to see servers from config monitor, because in the config monitor there are not domains
+RemoveDomain()
+{
+if [[ $INCOMINGSERVER == *"www"* ]]
+then
+	INCOMINGSERVER=`echo $INCOMINGSERVER | cut -d. -f1`
+fi
+}
+
+# Serially look up hosts
+LookupAllHosts()
+{
+for SINGLE_SERVER in `cat $DEST_HOST_LIST`
+do
+	echo "$SINGLE_SERVER:"
+	SortIncoming $SINGLE_SERVER
+done
+}
+
+# Validate all-servers list.
+LookupAll()
+{
+if [ -f $DEST_HOST_LIST ]
+then
+	LookupAllHosts
+else
+        if [[ $HOSTNAME == lp-webhobbit01.co.ihc.com ]]
+        then
+                cp $HOST_LIST $DEST_HOST_LIST
+                LookupAllHosts
+        else
+                scp -q lp-webhobbit01.co.ihc.com:$HOST_LIST $DEST_HOST_LIST
+                LookupAllHosts
+        fi
+fi
+}
+
+# Enter and validate user defined server or host list
+LookupGroup()
+{
+echo "Enter the filename of the user defined host list:"
+read GRP_FILE
+
+if [ -z $GRP_FILE ]
+then
+	echo "$0: Error: filename should not be Null. Exiting."
+	Abort
+else
+	if [ -f $GRP_FILE ]
+	then
+       		cp $GRP_FILE $DEST_HOST_LIST
+		LookupAllHosts
+	else
+		echo "$0: Error: No such file or directory: $GRP_FILE. Exiting."
+		Abort
+	fi
+fi
+}
+
+# Main
+trap Abort INT TERM
+rm -f $DEST_PRD_CFG $DEST_DEV_CFG $DEST_HOST_LIST
+		
+if [ -z $INCOMING ]
+then
+	Usage
+else
+	mkdir -p logs/$LU_DATE
+	case $INCOMING in
+	-all|-ALL|-All|all) # Lookup all hosts in all-servers list
+		LookupAll	
+		;;
+
+	-group|-grp|grp|group|Group|-Group|-GRP|GRP|Grp|-Grp) # Lookup a user defined list of hosts
+		LookupGroup
+		;;
+
+	*) # Lookup a single host
+		SortIncoming $INCOMING
+		;;
+	esac
+fi
+
+echo "-------"
+exit 0
