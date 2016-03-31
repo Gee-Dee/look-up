@@ -8,12 +8,12 @@
 # netstat nlp - another tool to use to narrow down what is running on the servers.
 # Black list vs White list - Instead of looking for what we need, look for what we don't need.
 
-set -x
+#set -x
 # Incoming argument
 INCOMING=$1
 
 # Config files
-LU_DATE=`date +%Y-%m%d-%H%M`
+LU_DATE=`date +%Y-%m%d-%H%M-%S`
 HOST_LIST="/usr/local/change-password/all-servers"
 PRD_CFG="analysis.cfg"
 DEV_CFG="hobbit-clients.cfg"
@@ -24,12 +24,12 @@ MONITORSERVERS="lp-webhobbit01 webhobbit-dev"
 
 # Log directories
 HOST_SVCS="logs/$LU_DATE/hostsvcs.log"
-ON_MONITORED_SVCS="logs/$LU_DATE/online_svcs_monitored.log"
-ON_UNMONITORED_SVCS="logs/$LU_DATE/online_svcs_not_monitored.log"
-ON_UNXPECTED_SVCS="logs/$LU_DATE/online_unexpected_svcs.log"
-NO_SVCS="logs/$LU_DATE/hosts_with_no_services.log"
-NO_ACCESS="logs/$LU_DATE/hosts_with_no_access.log"
-AWOL_HOSTS="logs/$LU_DATE/awol_hosts.log"
+ON_MONITORED_SVCS="logs/online_svcs_monitored-$LU_DATE.log"
+ON_UNMONITORED_SVCS="logs/online_svcs_not_monitored-$LU_DATE.log"
+ON_UNXPECTED_SVCS="logs/online_unexpected_svcs-$LU_DATE.log"
+NO_SVCS="logs/hosts_with_no_services-$LU_DATE.log"
+NO_ACCESS="logs/hosts_with_no_access-$LU_DATE.log"
+AWOL_HOSTS="logs/awol_hosts-$LU_DATE.log"
 
 Usage()
 {
@@ -331,7 +331,6 @@ if [ -z $INCOMING ]
 then
 	Usage
 else
-	mkdir -p logs/$LU_DATE
 	case $INCOMING in
 	-all|-ALL|-All|all) # Lookup all hosts in all-servers list
 		LookupAll	
